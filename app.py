@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 import mysql.connector
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -11,12 +12,22 @@ CORS(app)
 # ==========================================
 
 def get_db_connection():
-    return mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="system",
-        database="codm_arena"
-    )
+    db_host = os.environ.get("DB_HOST", "localhost")
+
+    config = {
+        "host": db_host,
+        "port": int(os.environ.get("DB_PORT", 3306 if db_host == "localhost" else 24791)),
+        "user": os.environ.get("DB_USER", "root"),
+        "password": os.environ.get("DB_PASSWORD", "system"),
+        "database": os.environ.get("DB_NAME", "codm_arena"),
+        "connection_timeout": 15
+    }
+
+    # Aiven requires an SSL connection.
+    if db_host != "localhost" and db_host != "127.0.0.1":
+        config["ssl_verify_cert"] = True
+
+    return mysql.connector.connect(**config)
 
 
 # ==========================================
@@ -37,65 +48,60 @@ def home():
 
 @app.route("/api/players", methods=["GET"])
 def get_players():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT *
             FROM Players
             ORDER BY player_id
         """)
 
-        players = cursor.fetchall()
-        return jsonify(players)
+        return jsonify(cursor.fetchall())
 
     except Exception as e:
         print("Players API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load players"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
-# LEADERBOARD - ALL PLAYERS
+# LEADERBOARD
 # ==========================================
 
 @app.route("/api/leaderboard", methods=["GET"])
 def get_leaderboard():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
-        # Check the exact database and number of players.
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("SELECT DATABASE() AS database_name")
         database_info = cursor.fetchone()
 
         cursor.execute("SELECT COUNT(*) AS total FROM Players")
         database_count = cursor.fetchone()["total"]
 
-        # LEFT JOIN ensures players without match statistics
-        # are not excluded from the leaderboard.
         cursor.execute("""
             SELECT
                 p.player_id,
                 p.ign,
                 COALESCE(p.mp_rank, 'Unranked') AS mp_rank,
-
-                COALESCE(stats.matches_played, 0)
-                    AS matches_played,
-
-                COALESCE(stats.total_kills, 0)
-                    AS total_kills,
-
-                COALESCE(stats.total_deaths, 0)
-                    AS total_deaths,
-
-                COALESCE(stats.total_assists, 0)
-                    AS total_assists,
-
+                COALESCE(stats.matches_played, 0) AS matches_played,
+                COALESCE(stats.total_kills, 0) AS total_kills,
+                COALESCE(stats.total_deaths, 0) AS total_deaths,
+                COALESCE(stats.total_assists, 0) AS total_assists,
                 COALESCE(
                     ROUND(
                         stats.total_kills /
@@ -104,9 +110,7 @@ def get_leaderboard():
                     ),
                     0
                 ) AS kd_ratio
-
             FROM Players p
-
             LEFT JOIN (
                 SELECT
                     player_id,
@@ -116,9 +120,7 @@ def get_leaderboard():
                     SUM(assists) AS total_assists
                 FROM Player_Match_Stats
                 GROUP BY player_id
-            ) stats
-                ON p.player_id = stats.player_id
-
+            ) stats ON p.player_id = stats.player_id
             ORDER BY
                 COALESCE(stats.total_kills, 0) DESC,
                 p.player_id ASC
@@ -126,14 +128,6 @@ def get_leaderboard():
 
         players = cursor.fetchall()
 
-        print("------------------------------------")
-        print("LEADERBOARD DEBUG")
-        print("Database:", database_info["database_name"])
-        print("Players in database:", database_count)
-        print("Players returned:", len(players))
-        print("------------------------------------")
-
-        # Return diagnostic information along with all player records.
         return jsonify({
             "database": database_info["database_name"],
             "database_count": database_count,
@@ -143,23 +137,28 @@ def get_leaderboard():
 
     except Exception as e:
         print("Leaderboard API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load leaderboard"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
-# DEBUG DATABASE
+# DEBUG PLAYERS
 # ==========================================
 
 @app.route("/api/debug-players", methods=["GET"])
 def debug_players():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("SELECT DATABASE() AS database_name")
         database = cursor.fetchone()
 
@@ -183,11 +182,13 @@ def debug_players():
 
     except Exception as e:
         print("Debug API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to retrieve player diagnostics"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -196,10 +197,13 @@ def debug_players():
 
 @app.route("/api/squads", methods=["GET"])
 def get_squads():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT
                 s.squad_id,
@@ -243,11 +247,13 @@ def get_squads():
 
     except Exception as e:
         print("Squads API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load squads"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -256,10 +262,13 @@ def get_squads():
 
 @app.route("/api/tournaments", methods=["GET"])
 def get_tournaments():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT *
             FROM Tournaments
@@ -270,11 +279,13 @@ def get_tournaments():
 
     except Exception as e:
         print("Tournaments API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load tournaments"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -283,10 +294,13 @@ def get_tournaments():
 
 @app.route("/api/tournaments/<int:tournament_id>", methods=["GET"])
 def get_tournament_details(tournament_id):
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT *
             FROM Tournaments
@@ -310,11 +324,13 @@ def get_tournament_details(tournament_id):
 
     except Exception as e:
         print("Tournament details error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load tournament details"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -323,10 +339,13 @@ def get_tournament_details(tournament_id):
 
 @app.route("/api/matches", methods=["GET"])
 def get_matches():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT
                 m.*,
@@ -343,17 +362,17 @@ def get_matches():
             ORDER BY m.match_id DESC
         """)
 
-        matches = cursor.fetchall()
-
-        return jsonify(matches)
+        return jsonify(cursor.fetchall())
 
     except Exception as e:
         print("Matches API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load matches"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -362,10 +381,13 @@ def get_matches():
 
 @app.route("/api/analytics", methods=["GET"])
 def get_analytics():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         queries = {
             "total_players": "SELECT COUNT(*) AS total FROM Players",
             "total_clans": "SELECT COUNT(*) AS total FROM Clans",
@@ -384,11 +406,13 @@ def get_analytics():
 
     except Exception as e:
         print("Analytics API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load analytics"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -397,10 +421,13 @@ def get_analytics():
 
 @app.route("/api/smart-analyzer", methods=["GET"])
 def smart_analyzer():
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
         cursor.execute("""
             SELECT
                 p.player_id,
@@ -418,8 +445,7 @@ def smart_analyzer():
                     SUM(assists) AS total_assists
                 FROM Player_Match_Stats
                 GROUP BY player_id
-            ) stats
-                ON p.player_id = stats.player_id
+            ) stats ON p.player_id = stats.player_id
             ORDER BY total_kills DESC
             LIMIT 5
         """)
@@ -428,11 +454,13 @@ def smart_analyzer():
 
     except Exception as e:
         print("Smart Analyzer API error:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to load Smart Analyzer"}), 500
 
     finally:
-        cursor.close()
-        connection.close()
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
 
 
 # ==========================================
@@ -441,7 +469,7 @@ def smart_analyzer():
 
 if __name__ == "__main__":
     app.run(
-        host="127.0.0.1",
-        port=5000,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
         debug=False
     )
